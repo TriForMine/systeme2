@@ -1,29 +1,26 @@
+import os
 import select
 import socket
+import sys
+import time
 
 import consts
 
 HOST = "127.0.0.1"  # or 'localhost' or '' - Standard loopback interface address
-PORT = 2000  # Port to listen on (non-privileged ports are > 1023)
+PORT = 2001  # Port to listen on (non-privileged ports are > 1023)
 MAXBYTES = 4096
 serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-serversocket.bind((HOST, PORT))
-serversocket.listen()
-socketlist = [serversocket]
-pseudos = {}
-
-print("Server is listening on port", PORT, "...")
 
 
 def sendToAll(data):
     for s in socketlist:
-        if s != serversocket:
+        if s != serversocket and s != sys.stdin:
             s.send(data)
 
 
 def sendToOthers(clientsocket, data):
     for s in socketlist:
-        if s != serversocket and s != clientsocket:
+        if s != serversocket and s != clientsocket and s != sys.stdin:
             s.send(data)
 
 
@@ -66,7 +63,7 @@ def handleClientMessage(clientsocket, data):
                 message = str.join(' ', decodedData["args"][1:])
                 found = False
                 for s in socketlist:
-                    if s != serversocket and s != clientsocket and pseudos[s] == pseudo:
+                    if s != serversocket and s != clientsocket and s != sys.stdin and pseudos[s] == pseudo:
                         sendToClient(s, consts.encodeSocketMsg(consts.SocketMsgType.DIRECT_MESSAGE,
                                                                consts.encodeMessageData(pseudos[clientsocket],
                                                                                         message)).encode())
@@ -83,22 +80,82 @@ def handleClientMessage(clientsocket, data):
                          consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE, "Unknown command.").encode())
 
 
-while len(socketlist) > 0:
-    (readable, _, _) = select.select(socketlist, [], [])
-    for s in readable:
-        if s == serversocket:  # serversocket receives a connection
-            (clientsocket, (addr, port)) = s.accept()
-            print("connection from:", addr, port)
-            socketlist.append(clientsocket)
-        else:  # data is sent from given client
-            data = s.recv(MAXBYTES)
-            if len(data) > 0:
-                handleClientMessage(s, data)
-            else:  # client has disconnected
-                print(pseudos[clientsocket], "has disconnected.")
-                leftMessage = consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
-                                                     pseudos[clientsocket] + " has left the chatroom.")
-                sendToOthers(clientsocket, leftMessage.encode())
-                s.close()
-                pseudos.pop(s)
-                socketlist.remove(s)
+with serversocket:
+    serversocket.bind((HOST, PORT))
+    serversocket.listen()
+    socketlist = [sys.stdin, serversocket]
+    pseudos = {}
+
+    print("Server is listening on port", PORT, "...")
+
+    while len(socketlist) > 0:
+        (readable, _, _) = select.select(socketlist, [], [])
+        for s in readable:
+            if s == serversocket:  # serversocket receives a connection
+                (clientsocket, (addr, port)) = s.accept()
+                print("connection from:", addr, port)
+                socketlist.append(clientsocket)
+            elif s == sys.stdin:  # data is sent from the server console
+                data = os.read(0, MAXBYTES)
+                if len(data) == 0:
+                    break
+                # Remove trailing newline
+                data = data[:-1]
+
+                decodedData = data.decode()
+                if decodedData == "/quit":
+                    print("Shutting down server...")
+                    sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
+                                                     "The server is shutting down.").encode())
+                    for s in socketlist:
+                        if s != serversocket:
+                            s.close()
+                    socketlist = []
+                elif decodedData.startswith("/wall"):
+                    content = decodedData[6:]
+                    if len(content) > 0:
+                        sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE, content).encode())
+                    else:
+                        print("Usage: /wall <message>")
+                elif decodedData.startswith("/kick"):
+                    username = decodedData[6:]
+                    if len(username) > 0:
+                        sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
+                                                         username + " has been kicked.").encode())
+                        for s in socketlist:
+                            if s != serversocket and s != sys.stdin and pseudos[s] == username:
+                                s.close()
+                                socketlist.remove(s)
+                                pseudos.pop(s)
+                                break
+                elif decodedData.startswith("/shutdown"):
+                    seconds = decodedData[10:]
+                    if len(seconds) > 0:
+                        seconds = int(seconds)
+                        sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
+                                                         "The server will shutdown in " + str(
+                                                             seconds) + " seconds.").encode())
+                        time.sleep(seconds)
+                        print("Shutting down server...")
+                        sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
+                                                         "The server is shutting down.").encode())
+                        for s in socketlist:
+                            if s != serversocket:
+                                s.close()
+                        socketlist = []
+                    else:
+                        print("Usage: /shutdown <seconds>")
+                else:
+                    print("Unknown command.")
+            else:  # data is sent from given client
+                data = s.recv(MAXBYTES)
+                if len(data) > 0:
+                    handleClientMessage(s, data)
+                else:  # client has disconnected
+                    print(pseudos[clientsocket], "has disconnected.")
+                    leftMessage = consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE,
+                                                         pseudos[clientsocket] + " has left the chatroom.")
+                    sendToOthers(clientsocket, leftMessage.encode())
+                    s.close()
+                    pseudos.pop(s)
+                    socketlist.remove(s)
