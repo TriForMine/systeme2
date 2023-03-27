@@ -86,7 +86,12 @@ with serversocket:
     socketlist = [sys.stdin, serversocket]
     pseudos = {}
 
-    print("Server is listening on port", PORT, "...")
+    print("Server is listening on ip", HOST, "and port", PORT)
+    print("\n")
+    print(
+        "Available commands:\n/wall <message>: send a message to all users\n/list: list all the connected users\n/kick <pseudo>: kick the given user\n/shutdown <seconds>: shutdown the server after the given amount of seconds\n/quit: shutdown the server")
+
+    print("\n")
 
     while len(socketlist) > 0:
         (readable, _, _) = select.select(socketlist, [], [])
@@ -117,6 +122,8 @@ with serversocket:
                         sendToAll(consts.encodeSocketMsg(consts.SocketMsgType.SERVER_MESSAGE, content).encode())
                     else:
                         print("Usage: /wall <message>")
+                elif decodedData == "/list":
+                    print("Connected users: " + str.join(', ', pseudos.values()))
                 elif decodedData.startswith("/kick"):
                     username = decodedData[6:]
                     if len(username) > 0:
